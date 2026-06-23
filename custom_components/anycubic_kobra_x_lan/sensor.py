@@ -113,7 +113,7 @@ STATIC_SENSORS: tuple[AnycubicSensorEntityDescription, ...] = (
     AnycubicSensorEntityDescription(
         key="loaded_slot",
         name="Loaded slot",
-        value_fn=lambda data: _display_slot_number(_payload(data, "multiColorBox").get("loaded_slot")),
+        value_fn=lambda data: _display_slot_number(_loaded_slot(data)),
     ),
     AnycubicSensorEntityDescription(
         key="print_task",
@@ -386,6 +386,15 @@ def _first_multi_color_box(data: dict[str, Any]) -> dict[str, Any]:
         return boxes[0]
 
     return {}
+
+
+def _loaded_slot(data: dict[str, Any]) -> Any:
+    box = _first_multi_color_box(data)
+
+    if "loaded_slot" in box:
+        return box.get("loaded_slot")
+
+    return _payload(data, "multiColorBox").get("loaded_slot")
 
 
 def _multi_color_boxes(data: dict[str, Any]) -> list[dict[str, Any]]:
