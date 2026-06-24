@@ -54,7 +54,7 @@ class AnycubicLanCredentials:
             devicepk=data["devicepk"],
             ip=data["ip"],
             mode_id=str(data["modeId"]),
-            model_id=str(data["modelId"]),
+            model_id=str(data.get("modelId") or data.get("modeId")),
             model_name=data["modelName"],
             username=data["username"],
             password=data["password"],
