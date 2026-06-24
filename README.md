@@ -65,6 +65,7 @@ Your Home Assistant instance and printer must be on the same local network.
 Tested and confirmed:
 
 - Anycubic Kobra X
+- Anycubic Kobra S1
 
 The AnycubicSlicerNext LAN code also contains configuration for the following models, but they have not been tested with this integration yet:
 
@@ -74,7 +75,6 @@ The AnycubicSlicerNext LAN code also contains configuration for the following mo
 - Anycubic Kobra 3
 - Anycubic Kobra 3 Max
 - Anycubic Kobra 4
-- Anycubic Kobra S1
 - Anycubic Kobra S1 Max
 
 These printers may use a similar LAN/MQTT protocol, but support is not confirmed until someone tests them. If you test one and it's working or not working please get back to me so I can update this list.
