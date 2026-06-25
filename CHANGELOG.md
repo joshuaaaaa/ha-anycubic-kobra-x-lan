@@ -2,11 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## 0.1.2
 
-Changes planned for the next release.
+### Fixed
 
-## 0.1.1 - Unreleased
+- Tweaked for missing modelId for Kobra S1 Combo (Thanks fo grigorye)
+
+## 0.1.1
 
 ### Added
 
