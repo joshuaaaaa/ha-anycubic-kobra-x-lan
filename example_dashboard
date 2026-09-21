@@ -1,0 +1,278 @@
+views:
+  - type: sections
+    max_columns: 4
+    title: Overview
+    path: overview
+    icon: mdi:printer-3d
+    sections:
+      - type: grid
+        cards:
+          - type: heading
+            heading: Anycubic Kobra X
+          - type: entities
+            title: Anycubic Kobra X
+            show_header_toggle: false
+            entities:
+              - entity: sensor.anycubic_kobra_x_printer_state
+                name: State
+              - entity: sensor.anycubic_kobra_x_print_status
+                name: Print status
+              - entity: sensor.anycubic_kobra_x_print_task
+                name: Print task
+              - entity: sensor.anycubic_kobra_x_print_progress
+                name: Progress
+              - entity: sensor.anycubic_kobra_x_nozzle_temperature
+                name: Nozzle
+              - entity: sensor.anycubic_kobra_x_bed_temperature
+                name: Bed
+              - entity: sensor.anycubic_kobra_x_target_nozzle_temperature
+                name: Nozzle target
+              - entity: sensor.anycubic_kobra_x_target_bed_temperature
+                name: Bed target
+              - entity: light.anycubic_kobra_x_camera_light
+                name: Camera light
+              - entity: button.anycubic_kobra_x_refresh_data
+                name: Refresh
+          - type: entities
+            title: Print progress
+            show_header_toggle: false
+            entities:
+              - entity: sensor.anycubic_kobra_x_print_progress
+                name: Progress
+          - type: gauge
+            name: Anycubic nozzle
+            entity: sensor.anycubic_kobra_x_nozzle_temperature
+            min: 0
+            max: 300
+            needle: true
+          - type: gauge
+            name: Anycubic bed
+            entity: sensor.anycubic_kobra_x_bed_temperature
+            min: 0
+            max: 120
+            needle: true
+  - type: sections
+    max_columns: 4
+    title: Anycubic Kobra X
+    path: anycubic-kobra-x
+    icon: mdi:printer-3d-nozzle
+    visible:
+      - user: a842b3edb182426d8bb48699ae564efa
+    sections:
+      - type: grid
+        cards:
+          - type: heading
+            heading: Power and status
+          - type: entities
+            title: Printer
+            show_header_toggle: false
+            entities:
+              - entity: sensor.anycubic_kobra_x_printer_state
+                name: State
+              - entity: sensor.anycubic_kobra_x_print_status
+                name: Print status
+              - entity: sensor.anycubic_kobra_x_model
+                name: Model
+              - entity: sensor.anycubic_kobra_x_ip_address
+                name: IP address
+              - entity: sensor.anycubic_kobra_x_firmware_version
+                name: Firmware
+              - entity: sensor.anycubic_kobra_x_features
+                name: Features
+              - entity: binary_sensor.anycubic_kobra_x_usb_available
+                name: USB available
+          - type: entities
+            title: Quick actions
+            show_header_toggle: false
+            entities:
+              - entity: button.anycubic_kobra_x_refresh_data
+                name: Refresh data
+              - entity: button.anycubic_kobra_x_reconnect_lan_connection
+                name: Reconnect LAN
+              - entity: light.anycubic_kobra_x_camera_light
+                name: Camera light
+              - entity: switch.printer_socket_2
+                name: Sling
+              - entity: switch.printer_socket_1
+                name: 3D-Printer
+      - type: grid
+        cards:
+          - type: entities
+            title: Print progress
+            show_header_toggle: false
+            entities:
+              - entity: sensor.anycubic_kobra_x_print_progress
+                name: Progress
+          - type: entities
+            title: Print task
+            show_header_toggle: false
+            entities:
+              - entity: sensor.anycubic_kobra_x_print_task
+                name: Task
+              - entity: sensor.anycubic_kobra_x_print_status
+                name: Status
+              - entity: sensor.anycubic_kobra_x_print_progress
+                name: Progress
+              - entity: sensor.anycubic_kobra_x_current_layer
+                name: Current layer
+              - entity: sensor.anycubic_kobra_x_total_layers
+                name: Total layers
+              - entity: sensor.anycubic_kobra_x_filament_used
+                name: Filament used
+              - entity: sensor.anycubic_kobra_x_task_id
+                name: Task ID
+          - type: markdown
+            title: Print time
+            content: >
+              {% set remaining =
+              states('sensor.anycubic_kobra_x_remaining_print_time') | int(0) %}
+              {% set print_time = states('sensor.anycubic_kobra_x_print_time') |
+              int(0) %}
+
+              **Remaining time:** {{ remaining // 60 }}h {{ '%02d' |
+              format(remaining % 60) }}m  
+
+              **Print time:** {{ print_time // 60 }}h {{ '%02d' |
+              format(print_time % 60) }}m  
+
+              **Estimated finish:** {{ (as_timestamp(now()) + remaining * 60) |
+              timestamp_custom('%H:%M') }}
+          - type: custom:apexcharts-card
+            header:
+              show: true
+              title: Print time prediction
+              show_states: true
+            graph_span: 4h
+            span:
+              offset: +2h
+            now:
+              show: true
+              label: Now
+            apex_config:
+              yaxis:
+                min: 0
+                title:
+                  text: Minutes remaining
+            series:
+              - entity: sensor.anycubic_kobra_x_remaining_print_time
+                name: Remaining time
+                type: line
+                curve: smooth
+                stroke_width: 2
+                group_by:
+                  duration: 5min
+                  func: last
+              - entity: sensor.anycubic_kobra_x_remaining_print_time
+                name: Prediction to 0
+                type: line
+                curve: straight
+                stroke_width: 2
+                stroke_dash: 6
+                show:
+                  in_header: false
+                  legend_value: false
+                data_generator: >
+                  const remaining = Number(entity.state);
+
+                  const now = new Date();
+
+
+                  if (isNaN(remaining) || remaining <= 0) {
+                    return [[now, 0]];
+                  }
+
+
+                  const finish = new Date(now.getTime() + remaining * 60 *
+                  1000);
+
+
+                  return [
+                    [now, remaining],
+                    [finish, 0]
+                  ];
+      - type: grid
+        cards:
+          - type: heading
+            heading: Temperatures
+          - type: gauge
+            name: Nozzle
+            entity: sensor.anycubic_kobra_x_nozzle_temperature
+            min: 0
+            max: 300
+            needle: true
+          - type: gauge
+            name: Bed
+            entity: sensor.anycubic_kobra_x_bed_temperature
+            min: 0
+            max: 120
+            needle: true
+          - type: entities
+            title: Temperature controls
+            show_header_toggle: false
+            entities:
+              - entity: number.anycubic_kobra_x_target_nozzle_temperature
+                name: Set nozzle target
+              - entity: sensor.anycubic_kobra_x_target_nozzle_temperature
+                name: Current nozzle target
+              - entity: number.anycubic_kobra_x_target_bed_temperature
+                name: Set bed target
+              - entity: sensor.anycubic_kobra_x_target_bed_temperature
+                name: Current bed target
+      - type: grid
+        cards:
+          - type: heading
+            heading: Fans
+          - type: entities
+            title: Fan status
+            show_header_toggle: false
+            entities:
+              - entity: sensor.anycubic_kobra_x_fan_speed
+                name: Model fan
+              - entity: sensor.anycubic_kobra_x_aux_fan_speed
+                name: Aux fan
+              - entity: sensor.anycubic_kobra_x_print_speed_mode
+                name: Print speed mode
+          - type: entities
+            title: Fan controls
+            show_header_toggle: false
+            entities:
+              - entity: number.anycubic_kobra_x_model_fan_speed
+                name: Model fan speed
+              - entity: number.anycubic_kobra_x_aux_fan_speed
+                name: Aux fan speed
+              - entity: number.anycubic_kobra_x_box_fan_speed
+                name: Box fan speed
+      - type: grid
+        cards:
+          - type: heading
+            heading: Filament
+          - type: entities
+            title: Multi-color box
+            show_header_toggle: false
+            entities:
+              - entity: binary_sensor.anycubic_kobra_x_multi_color_box_available
+                name: Available
+              - entity: sensor.anycubic_kobra_x_multi_color_box_status
+                name: Status
+              - entity: sensor.anycubic_kobra_x_loaded_slot
+                name: Loaded slot
+              - entity: sensor.anycubic_kobra_x_box_1_slot_1
+                name: Box 1 slot 1
+              - entity: sensor.anycubic_kobra_x_box_1_slot_2
+                name: Box 1 slot 2
+              - entity: sensor.anycubic_kobra_x_box_1_slot_3
+                name: Box 1 slot 3
+              - entity: sensor.anycubic_kobra_x_box_1_slot_4
+                name: Box 1 slot 4
+      - type: grid
+        cards:
+          - type: heading
+            heading: Camera
+          - type: entities
+            title: Camera
+            show_header_toggle: false
+            entities:
+              - entity: binary_sensor.anycubic_kobra_x_camera_available
+                name: Camera available
+              - entity: light.anycubic_kobra_x_camera_light
+                name: Camera light
