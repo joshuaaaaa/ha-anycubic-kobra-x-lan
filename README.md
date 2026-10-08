@@ -18,7 +18,8 @@ This integration is focused on local printer access. It does not require an Anyc
 - Feature information sensor
 - Multi-color box status
 - Dynamic filament slot sensors
-- Camera entity
+- Camera entity (auto-starts the printer stream)
+- Camera stream switch
 - Camera light control
 - Refresh data button
 - Reconnect LAN connection button
@@ -81,9 +82,28 @@ These printers may use a similar LAN/MQTT protocol, but support is not confirmed
 
 ## Camera
 
-The integration exposes a camera entity when the printer reports that a camera is available.
+The integration exposes `camera.<printer>_camera` and a `switch.<printer>_camera_stream`.
 
-The camera stream depends on the printer's local stream URL and Home Assistant's camera handling. Camera light control is exposed separately as a light entity.
+How the printer camera works:
+
+- The printer serves the video as HTTP-FLV on port `18088` (`http://<printer-ip>:18088/flv`), but **only after it receives the MQTT command `startCapture`**.
+- After a printer reboot (or when the printer drops the LAN connection) the capture is stopped again. This is printer behaviour, not a bug. A camera added by hand (Generic camera / go2rtc with the URL pasted in) therefore stays idle with no picture after a restart.
+- The camera entity sends `startCapture` every time Home Assistant opens the stream, and again automatically after the LAN connection reconnects if the camera was viewed in the last 10 minutes.
+- The Kobra X answers the FLV request with `206 Partial Content`, which ffmpeg/go2rtc refuse. The stream is relayed through Home Assistant with a `200` response so it plays in the normal camera cards.
+- Snapshots are taken from the running stream (the printer has no snapshot endpoint).
+
+Show it on a dashboard with a Picture Entity card in live mode:
+
+```yaml
+type: picture-entity
+entity: camera.anycubic_kobra_x_camera
+camera_view: live
+show_state: false
+```
+
+If the picture stays black, toggle **Camera stream** off and on, or press **Reconnect LAN connection**. Only one client can usually hold the stream; close AnycubicSlicerNext's camera view if it is open.
+
+Camera light control is exposed separately as a light entity. See [`example_dashboard`](example_dashboard) for a full dashboard.
 
 ## Controls
 

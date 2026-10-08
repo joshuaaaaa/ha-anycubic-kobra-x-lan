@@ -9,6 +9,13 @@ views:
         cards:
           - type: heading
             heading: Anycubic Kobra X
+          - type: picture-entity
+            entity: camera.anycubic_kobra_x_camera
+            name: Kobra X
+            camera_view: live
+            show_state: false
+            tap_action:
+              action: more-info
           - type: entities
             title: Anycubic Kobra X
             show_header_toggle: false
@@ -268,11 +275,27 @@ views:
         cards:
           - type: heading
             heading: Camera
+          # camera_view: live keeps the stream open while the dashboard is
+          # visible; opening it sends startCapture to the printer, so the
+          # picture comes back on its own after a printer or HA restart.
+          - type: picture-entity
+            entity: camera.anycubic_kobra_x_camera
+            name: Kobra X camera
+            camera_view: live
+            show_state: false
+            tap_action:
+              action: more-info
           - type: entities
             title: Camera
             show_header_toggle: false
             entities:
               - entity: binary_sensor.anycubic_kobra_x_camera_available
                 name: Camera available
+              - entity: switch.anycubic_kobra_x_camera_stream
+                name: Camera stream
               - entity: light.anycubic_kobra_x_camera_light
                 name: Camera light
+              - type: attribute
+                entity: camera.anycubic_kobra_x_camera
+                attribute: last_stream_state
+                name: Last stream state
