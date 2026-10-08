@@ -15,6 +15,7 @@ from urllib.parse import urlparse
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import (
@@ -24,8 +25,17 @@ from .const import (
     CONF_POLLING_INTERVAL,
     DEFAULT_POLLING_INTERVAL,
     DOMAIN,
+    OPTIONAL_QUERY_TYPES,
     QUERY_TYPES,
 )
+from . import data as data_helpers
+
+AXIS_Z = 3
+AXIS_XY = 4
+MOVE_TYPE_HOME = 2
+FEED_TYPE_RETRACT = 2
+DEFAULT_DRYING_TEMP = 45
+DEFAULT_DRYING_DURATION = 240
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -50,28 +60,26 @@ class AnycubicKobraXLanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._handle_report_from_thread,
             self._handle_connected_from_thread,
         )
+        self.drying_target_temp = DEFAULT_DRYING_TEMP
+        self.drying_duration = DEFAULT_DRYING_DURATION
         self._camera_start_lock = asyncio.Lock()
         self._camera_last_start = 0.0
         self._camera_last_requested = 0.0
 
     async def _async_update_data(self) -> dict[str, Any]:
         try:
-            data = await self.hass.async_add_executor_job(self._mqtt.query_all_and_wait)
+            reports = await self.hass.async_add_executor_job(
+                self._mqtt.query_all_and_wait
+            )
         except Exception as err:
             raise UpdateFailed(str(err)) from err
 
-        previous_data = self.data or {}
+        # Keep everything the printer pushed on its own (print progress,
+        # drying, command replies, camera state) and lay fresh answers on top.
+        data = dict(self.data or {})
 
-        video = data.get("video")
-
-        if isinstance(video, dict):
-            self._update_camera_stream_state(data, video)
-        else:
-            if "camera_stream" in previous_data:
-                data["camera_stream"] = previous_data["camera_stream"]
-
-            if "video" in previous_data:
-                data["video"] = previous_data["video"]
+        for report_type, payload in reports.items():
+            self._apply_report(data, report_type, payload)
 
         return data
 
@@ -254,6 +262,146 @@ class AnycubicKobraXLanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._camera_last_start = 0.0
             self.hass.async_create_task(self.async_start_camera())
 
+    async def async_send_command(
+        self,
+        message_type: str,
+        action: str,
+        data: dict[str, Any] | None = None,
+        refresh: bool = True,
+    ) -> None:
+        await self.hass.async_add_executor_job(
+            self._mqtt.publish_command,
+            message_type,
+            action,
+            data,
+        )
+
+        if refresh:
+            await self.async_request_refresh()
+
+    async def async_print_control(self, action: str) -> None:
+        """Pause, resume or stop the running job (print/<action>)."""
+        current_task_id = data_helpers.task_id(self.data or {})
+
+        if not current_task_id:
+            raise HomeAssistantError("No print job is running")
+
+        await self.async_send_command("print", action, {"taskid": current_task_id})
+
+    async def async_set_print_speed_mode(self, mode: int) -> None:
+        await self.async_set_print_setting("print_speed_mode", int(mode))
+
+    async def async_set_drying(
+        self,
+        box_index: int,
+        enabled: bool,
+        target_temp: int | None = None,
+        duration: int | None = None,
+    ) -> None:
+        data = self.data or {}
+        await self.async_send_command(
+            "multiColorBox",
+            "setDry",
+            {
+                "multi_color_box": [
+                    {
+                        "id": data_helpers.box_id(data, box_index),
+                        "drying_status": {
+                            "status": 1 if enabled else 0,
+                            "target_temp": int(
+                                target_temp
+                                if target_temp is not None
+                                else self.drying_target_temp
+                            ),
+                            "duration": int(
+                                duration if duration is not None else self.drying_duration
+                            )
+                            if enabled
+                            else 0,
+                            "remain_time": None,
+                        },
+                    }
+                ]
+            },
+        )
+
+    async def async_set_auto_feed(self, box_index: int, enabled: bool) -> None:
+        data = self.data or {}
+        await self.async_send_command(
+            "multiColorBox",
+            "setAutoFeed",
+            {
+                "multi_color_box": [
+                    {
+                        "id": data_helpers.box_id(data, box_index),
+                        "auto_feed": int(enabled),
+                    }
+                ]
+            },
+        )
+
+    async def async_retract_filament(self, box_index: int) -> None:
+        data = self.data or {}
+        await self.async_send_command(
+            "multiColorBox",
+            "feedFilament",
+            {
+                "multi_color_box": [
+                    {
+                        "id": data_helpers.box_id(data, box_index),
+                        "feed_status": {"slot_index": -1, "type": FEED_TYPE_RETRACT},
+                    }
+                ]
+            },
+        )
+
+    async def async_move_axis(
+        self,
+        axis: int,
+        move_type: int,
+        distance: int = 0,
+    ) -> None:
+        """axis 1 X, 2 Y, 3 Z, 4 X+Y; move_type 0 minus, 1 plus, 2 home."""
+        if data_helpers.print_in_progress(self.data or {}):
+            raise HomeAssistantError("Axes cannot be moved while printing")
+
+        await self.async_send_command(
+            "axis",
+            "move",
+            {"axis": int(axis), "move_type": int(move_type), "distance": int(distance)},
+            refresh=False,
+        )
+
+    async def async_home_all_axes(self) -> None:
+        # Axis 4 homes X and Y only; Z needs its own home once XY is done.
+        await self.async_move_axis(AXIS_XY, MOVE_TYPE_HOME)
+        await self._async_wait_for_axis_move()
+        await self.async_move_axis(AXIS_Z, MOVE_TYPE_HOME)
+        await self._async_wait_for_axis_move()
+        await self.async_query_axis_position()
+
+    async def _async_wait_for_axis_move(self, timeout: float = 120) -> None:
+        await asyncio.sleep(2)
+        end = time.monotonic() + timeout
+
+        while time.monotonic() < end:
+            state = data_helpers.axis_move_state(self.data or {})
+
+            if state in (None, "done", "failed"):
+                return
+
+            await asyncio.sleep(1)
+
+    async def async_motors_off(self) -> None:
+        await self.async_send_command("axis", "turnOff", None, refresh=False)
+
+    async def async_query_axis_position(self) -> None:
+        await self.async_send_command("axis", "query", {}, refresh=False)
+
+    @property
+    def mqtt_connected(self) -> bool:
+        return self._mqtt.is_connected
+
     async def async_set_target_temperature(
         self,
         setting_key: str,
@@ -266,16 +414,44 @@ class AnycubicKobraXLanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         setting_key: str,
         value: int,
     ) -> None:
-        task_id = _task_id(self.data or {})
+        current = self.data or {}
+        task_id = data_helpers.task_id(current)
         settings = {
             setting_key: int(value),
         }
 
-        await self.hass.async_add_executor_job(
-            self._mqtt.set_print_settings,
-            task_id,
-            settings,
-        )
+        if data_helpers.print_in_progress(current) and task_id:
+            await self.hass.async_add_executor_job(
+                self._mqtt.set_print_settings,
+                task_id,
+                settings,
+            )
+        elif setting_key in ("target_hotbed_temp", "target_nozzle_temp"):
+            # Without a job print/update is ignored; tempature/set is what
+            # the slicer's preheat uses (type 0 nozzle, 1 bed).
+            await self.hass.async_add_executor_job(
+                self._mqtt.publish_command,
+                "tempature",
+                "set",
+                {
+                    "type": 0 if setting_key == "target_nozzle_temp" else 1,
+                    "target_nozzle_temp": int(value)
+                    if setting_key == "target_nozzle_temp"
+                    else 0,
+                    "target_hotbed_temp": int(value)
+                    if setting_key == "target_hotbed_temp"
+                    else 0,
+                },
+            )
+        elif setting_key in ("fan_speed_pct", "aux_fan_speed_pct", "box_fan_level"):
+            await self.hass.async_add_executor_job(
+                self._mqtt.publish_command,
+                "fan",
+                "setSpeed",
+                settings,
+            )
+        else:
+            raise HomeAssistantError("This setting can only be changed while printing")
 
         new_data = dict(self.data or {})
 
@@ -315,16 +491,30 @@ class AnycubicKobraXLanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     def _handle_report_on_loop(self, report_type: str, payload: dict[str, Any]) -> None:
         new_data = dict(self.data or {})
-
-        if report_type == "light" or payload.get("type") == "light":
-            self._update_light_state(new_data, payload)
-        else:
-            new_data[report_type] = payload
-
-        if report_type == "video" or payload.get("type") == "video":
-            self._update_camera_stream_state(new_data, payload)
-
+        self._apply_report(new_data, report_type, payload)
         self.async_set_updated_data(new_data)
+
+    def _apply_report(
+        self,
+        data: dict[str, Any],
+        report_type: str,
+        payload: dict[str, Any],
+    ) -> None:
+        if report_type == "light":
+            self._update_light_state(data, payload)
+        elif report_type == "video":
+            data["video"] = payload
+            self._update_camera_stream_state(data, payload)
+        elif report_type == "multiColorBox":
+            _merge_multi_color_box(data, payload)
+        elif report_type == "axis" and payload.get("action") == "move":
+            # Move replies carry no coordinates; keep the last known position.
+            data["axis_move"] = payload
+        elif report_type in ("tempature", "fan"):
+            # Replies to set commands may carry only the changed value.
+            data[report_type] = _merge_report(data.get(report_type), payload)
+        else:
+            data[report_type] = payload
 
     def _update_light_state(
         self,
@@ -454,6 +644,7 @@ class _PersistentRawMqttClient:
         self._lock = threading.RLock()
         self._latest_lock = threading.RLock()
         self._latest: dict[str, Any] = {}
+        self._latest_time: dict[str, float] = {}
 
         self._sock = None
         self._last_rx = 0.0
@@ -488,27 +679,37 @@ class _PersistentRawMqttClient:
             self._close_locked()
             self._ensure_connected_locked()
 
+    @property
+    def is_connected(self) -> bool:
+        return self._sock is not None
+
     def query_all_and_wait(self) -> dict[str, Any]:
+        """Ask for every report and return the answers received for it."""
         self.start()
         self._ensure_connected()
 
+        started = time.monotonic()
         expected = set(QUERY_TYPES)
 
         for query_type in QUERY_TYPES:
             self._publish_query(query_type)
 
-        end_time = time.monotonic() + 8
+        # Printers without these stay silent, so they are not waited for.
+        for query_type in OPTIONAL_QUERY_TYPES:
+            self._publish_query(query_type)
+
+        end_time = started + 8
 
         while time.monotonic() < end_time:
             with self._latest_lock:
-                query_data = {
-                    key: value
-                    for key, value in self._latest.items()
-                    if key in expected
+                fresh = {
+                    key
+                    for key, received in self._latest_time.items()
+                    if received >= started
                 }
 
-                if expected.issubset(query_data.keys()):
-                    return query_data
+            if expected.issubset(fresh):
+                break
 
             time.sleep(0.1)
 
@@ -516,7 +717,7 @@ class _PersistentRawMqttClient:
             return {
                 key: value
                 for key, value in self._latest.items()
-                if key in expected
+                if self._latest_time.get(key, 0) >= started
             }
 
     def _reader_loop(self) -> None:
@@ -559,6 +760,7 @@ class _PersistentRawMqttClient:
 
                 with self._latest_lock:
                     self._latest[report_type] = payload
+                    self._latest_time[report_type] = time.monotonic()
 
                 self.on_report(report_type, payload)
             except Exception as err:
@@ -604,6 +806,29 @@ class _PersistentRawMqttClient:
     def set_camera_stream(self, action: str) -> None:
         publish_topic = f"anycubic/anycubicCloud/v1/web/printer/{self.mode_id}/{self.device_id}/video"
         payload = _build_video_capture_payload(action)
+
+        with self._lock:
+            self._ensure_connected_locked()
+
+            if self._sock is None:
+                raise RuntimeError("MQTT socket is not connected")
+
+            self._sock.sendall(_publish_packet(publish_topic, payload))
+
+    def publish_command(
+        self,
+        message_type: str,
+        action: str,
+        data: dict[str, Any] | None,
+    ) -> None:
+        publish_topic = f"anycubic/anycubicCloud/v1/web/printer/{self.mode_id}/{self.device_id}/{message_type}"
+        payload = {
+            "type": message_type,
+            "action": action,
+            "timestamp": int(time.time() * 1000),
+            "msgid": str(uuid.uuid4()),
+            "data": data,
+        }
 
         with self._lock:
             self._ensure_connected_locked()
@@ -854,30 +1079,66 @@ def _build_print_update_payload(
     }
 
 
-def _task_id(data: dict[str, Any]) -> str:
-    info = data.get("info")
+def _merge_report(previous: Any, payload: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(previous, dict):
+        return payload
 
-    if isinstance(info, dict):
-        payload = info.get("data")
+    merged = {**previous, **payload}
+    previous_data = previous.get("data")
+    new_data = payload.get("data")
 
-        if isinstance(payload, dict):
-            project = payload.get("project")
+    if isinstance(previous_data, dict) and isinstance(new_data, dict):
+        merged["data"] = {**previous_data, **new_data}
+    elif new_data is None and isinstance(previous_data, dict):
+        merged["data"] = previous_data
 
-            if isinstance(project, dict):
-                task_id = project.get("task_id")
+    return merged
 
-                if task_id is not None:
-                    return str(task_id)
 
-        project = info.get("project")
+def _merge_multi_color_box(data: dict[str, Any], payload: dict[str, Any]) -> None:
+    """Merge box updates by id so a reply to setDry/setAutoFeed (which only
+    carries the changed fields) does not wipe the slot list."""
+    previous = data.get("multiColorBox")
+    new_data = payload.get("data")
 
-        if isinstance(project, dict):
-            task_id = project.get("task_id")
+    if not isinstance(previous, dict) or not isinstance(new_data, dict):
+        if isinstance(new_data, dict):
+            data["multiColorBox"] = payload
+        return
 
-            if task_id is not None:
-                return str(task_id)
+    merged = _merge_report(previous, payload)
+    old_boxes = (previous.get("data") or {}).get("multi_color_box")
+    new_boxes = new_data.get("multi_color_box")
 
-    return ""
+    if isinstance(old_boxes, list) and isinstance(new_boxes, list):
+        boxes = [dict(box) if isinstance(box, dict) else box for box in old_boxes]
+
+        for index, new_box in enumerate(new_boxes):
+            if not isinstance(new_box, dict):
+                continue
+
+            target = None
+
+            for old_index, box in enumerate(boxes):
+                if isinstance(box, dict) and box.get("id", old_index) == new_box.get(
+                    "id", index
+                ):
+                    target = box
+                    break
+
+            if target is None:
+                boxes.append(dict(new_box))
+                continue
+
+            for key, value in new_box.items():
+                if isinstance(value, dict) and isinstance(target.get(key), dict):
+                    target[key] = {**target[key], **value}
+                else:
+                    target[key] = value
+
+        merged["data"] = {**merged["data"], "multi_color_box": boxes}
+
+    data["multiColorBox"] = merged
 
 
 def _report_type_from_topic_and_payload(
