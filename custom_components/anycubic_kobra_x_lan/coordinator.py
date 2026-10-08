@@ -17,7 +17,15 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .const import CONF_POLLING_INTERVAL, DEFAULT_POLLING_INTERVAL, DOMAIN, QUERY_TYPES
+from .const import (
+    CAMERA_RESUME_WINDOW_SECONDS,
+    CAMERA_START_DEBOUNCE_SECONDS,
+    CAMERA_STREAM_PORT,
+    CONF_POLLING_INTERVAL,
+    DEFAULT_POLLING_INTERVAL,
+    DOMAIN,
+    QUERY_TYPES,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -40,7 +48,11 @@ class AnycubicKobraXLanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._mqtt = _PersistentRawMqttClient(
             self.credentials,
             self._handle_report_from_thread,
+            self._handle_connected_from_thread,
         )
+        self._camera_start_lock = asyncio.Lock()
+        self._camera_last_start = 0.0
+        self._camera_last_requested = 0.0
 
     async def _async_update_data(self) -> dict[str, Any]:
         try:
@@ -129,27 +141,86 @@ class AnycubicKobraXLanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.async_set_updated_data(new_data)
 
     async def async_set_camera_stream(self, enabled: bool) -> None:
-        # AnycubicSlicerNext first sends stopCapture, waits briefly, and then
-        # sends startCapture when starting the LAN camera stream. Some printers
-        # do not start streaming if startCapture is sent directly.
         if enabled:
-            await self.hass.async_add_executor_job(
-                self._mqtt.set_camera_stream,
-                "stopCapture",
-            )
-            await asyncio.sleep(1)
-            action = "startCapture"
-            await self.hass.async_add_executor_job(
-                self._mqtt.set_camera_stream,
-                action,
-            )
-        else:
-            action = "stopCapture"
-            await self.hass.async_add_executor_job(
-                self._mqtt.set_camera_stream,
-                action,
+            await self.async_start_camera(force=True)
+            return
+
+        self._camera_last_requested = 0.0
+        await self.hass.async_add_executor_job(
+            self._mqtt.set_camera_stream,
+            "stopCapture",
+        )
+        self._set_camera_stream_optimistic(False, "stopCapture")
+
+    async def async_start_camera(self, force: bool = False) -> None:
+        """Ask the printer to push video to its local HTTP-FLV endpoint.
+
+        The printer keeps the stream endpoint closed after a reboot (and after
+        it drops the MQTT session) until startCapture is published again, so
+        this is called every time Home Assistant opens the stream.
+        """
+        self._camera_last_requested = time.monotonic()
+
+        async with self._camera_start_lock:
+            now = time.monotonic()
+
+            if (
+                not force
+                and now - self._camera_last_start < CAMERA_START_DEBOUNCE_SECONDS
+            ):
+                return
+
+            self._camera_last_start = now
+            camera_stream = (self.data or {}).get("camera_stream") or {}
+            running = (
+                camera_stream.get("enabled")
+                and not camera_stream.get("optimistic")
             )
 
+            try:
+                if not running:
+                    # AnycubicSlicerNext sends stopCapture first and waits
+                    # briefly; some firmwares ignore a bare startCapture when
+                    # the previous capture session was not closed cleanly.
+                    await self.hass.async_add_executor_job(
+                        self._mqtt.set_camera_stream,
+                        "stopCapture",
+                    )
+                    await asyncio.sleep(1)
+
+                await self.hass.async_add_executor_job(
+                    self._mqtt.set_camera_stream,
+                    "startCapture",
+                )
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.debug("Could not start the camera stream: %s", err)
+                return
+
+            if not running:
+                self._set_camera_stream_optimistic(True, "startCapture")
+
+    def camera_stream_url(self) -> str | None:
+        """Return the printer's local HTTP-FLV stream URL."""
+        info = (self.data or {}).get("info")
+
+        if isinstance(info, dict):
+            payload = info.get("data") if isinstance(info.get("data"), dict) else info
+            urls = payload.get("urls")
+
+            if isinstance(urls, dict):
+                stream_url = urls.get("rtspUrl")
+
+                if isinstance(stream_url, str) and stream_url:
+                    return stream_url
+
+        host = self.credentials.get("ip")
+
+        if host:
+            return f"http://{host}:{CAMERA_STREAM_PORT}/flv"
+
+        return None
+
+    def _set_camera_stream_optimistic(self, enabled: bool, action: str) -> None:
         new_data = dict(self.data or {})
         camera_stream = dict(new_data.get("camera_stream") or {})
         camera_stream["enabled"] = enabled
@@ -157,6 +228,31 @@ class AnycubicKobraXLanCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         camera_stream["optimistic"] = True
         new_data["camera_stream"] = camera_stream
         self.async_set_updated_data(new_data)
+
+    def _handle_connected_from_thread(self) -> None:
+        self.hass.loop.call_soon_threadsafe(self._handle_connected_on_loop)
+
+    def _handle_connected_on_loop(self) -> None:
+        # A new MQTT session means the printer (or the connection) restarted,
+        # so any capture session it had is gone.
+        if self.data and isinstance(self.data.get("camera_stream"), dict):
+            new_data = dict(self.data)
+            camera_stream = dict(new_data["camera_stream"])
+            camera_stream["enabled"] = False
+            camera_stream["optimistic"] = True
+            new_data["camera_stream"] = camera_stream
+            self.async_set_updated_data(new_data)
+
+        # Resume a stream somebody was watching when the connection dropped.
+        # A start already in flight opened this connection itself.
+        if (
+            not self._camera_start_lock.locked()
+            and self._camera_last_requested
+            and time.monotonic() - self._camera_last_requested
+            < CAMERA_RESUME_WINDOW_SECONDS
+        ):
+            self._camera_last_start = 0.0
+            self.hass.async_create_task(self.async_start_camera())
 
     async def async_set_target_temperature(
         self,
@@ -337,9 +433,11 @@ class _PersistentRawMqttClient:
         self,
         credentials: dict[str, Any],
         on_report,
+        on_connect=None,
     ) -> None:
         self.credentials = credentials
         self.on_report = on_report
+        self.on_connect = on_connect
 
         parsed = urlparse(credentials["broker"])
         self.host = parsed.hostname or credentials["ip"]
@@ -358,6 +456,8 @@ class _PersistentRawMqttClient:
         self._latest: dict[str, Any] = {}
 
         self._sock = None
+        self._last_rx = 0.0
+        self._last_ping = 0.0
         self._stop_event = threading.Event()
         self._reader_thread: threading.Thread | None = None
 
@@ -431,6 +531,8 @@ class _PersistentRawMqttClient:
                     time.sleep(1)
                     continue
 
+                self._keepalive(sock)
+
                 try:
                     packet_type, body = _read_packet(sock)
                 except (TimeoutError, socket.timeout):
@@ -439,6 +541,8 @@ class _PersistentRawMqttClient:
                 if packet_type is None:
                     self._mark_disconnected()
                     continue
+
+                self._last_rx = time.monotonic()
 
                 if (packet_type & 0xF0) != 0x30:
                     continue
@@ -461,6 +565,24 @@ class _PersistentRawMqttClient:
                 _LOGGER.debug("MQTT reader error, reconnecting: %s", err)
                 self._mark_disconnected()
                 time.sleep(2)
+
+    def _keepalive(self, sock) -> None:
+        # Without PINGREQ a printer that rebooted leaves a half-open socket
+        # behind and the reader never notices, so nothing (including the
+        # camera) recovers until Home Assistant is restarted.
+        now = time.monotonic()
+
+        if now - self._last_rx > MQTT_KEEPALIVE_SECONDS * 1.5:
+            _LOGGER.debug("No MQTT traffic from printer, reconnecting")
+            self._mark_disconnected()
+            return
+
+        if now - self._last_ping >= MQTT_KEEPALIVE_SECONDS / 2:
+            self._last_ping = now
+
+            with self._lock:
+                if self._sock is sock:
+                    sock.sendall(_PINGREQ_PACKET)
 
     def set_light(
         self,
@@ -548,12 +670,19 @@ class _PersistentRawMqttClient:
 
             sock.settimeout(1)
             self._sock = sock
+            self._last_rx = self._last_ping = time.monotonic()
             _LOGGER.debug("Connected to Anycubic LAN MQTT broker")
         except Exception:
             try:
                 sock.close()
             finally:
                 raise
+
+        if self.on_connect is not None:
+            try:
+                self.on_connect()
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.debug("MQTT on_connect callback failed: %s", err)
 
     def _mark_disconnected(self) -> None:
         with self._lock:
@@ -567,6 +696,10 @@ class _PersistentRawMqttClient:
                 pass
             finally:
                 self._sock = None
+
+
+MQTT_KEEPALIVE_SECONDS = 60
+_PINGREQ_PACKET = bytes([0xC0, 0x00])
 
 
 def _enc_str(value: bytes) -> bytes:
@@ -641,7 +774,7 @@ def _connect_packet(client_id: str, username: str, password: str) -> bytes:
     body = (
         _enc_str(b"MQTT")
         + bytes([4, 0xC2])
-        + struct.pack("!H", 60)
+        + struct.pack("!H", MQTT_KEEPALIVE_SECONDS)
         + _enc_str(client_id.encode("utf-8"))
         + _enc_str(username.encode("utf-8"))
         + _enc_str(password.encode("utf-8"))
