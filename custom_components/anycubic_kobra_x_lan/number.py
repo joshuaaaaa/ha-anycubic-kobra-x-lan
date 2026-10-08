@@ -265,18 +265,15 @@ def _temperature(data: dict[str, Any]) -> dict[str, Any]:
 
 
 def _fan(data: dict[str, Any]) -> dict[str, Any]:
-    fan = _payload(data, "fan")
-
-    if fan:
-        return fan
-
+    # The fan report may only carry the model fan (Kobra X); the info report
+    # has the aux fan, so fall back per key instead of per report.
     info = _payload(data, "info")
-
-    values: dict[str, Any] = {}
-
-    for key in ("fan_speed_pct", "aux_fan_speed_pct", "box_fan_level"):
-        if key in info:
-            values[key] = info[key]
+    values: dict[str, Any] = {
+        key: info[key]
+        for key in ("fan_speed_pct", "aux_fan_speed_pct", "box_fan_level")
+        if key in info
+    }
+    values.update(_payload(data, "fan"))
 
     return values
 

@@ -328,7 +328,7 @@ def _speed_mode_name(data: dict[str, Any]) -> str | None:
     mode = data_helpers.print_settings(data).get("print_speed_mode")
 
     try:
-        return data_helpers.speed_modes(data).get(int(mode), str(mode))
+        return data_helpers.speed_modes(data).get(int(mode))
     except (TypeError, ValueError):
         return None
 

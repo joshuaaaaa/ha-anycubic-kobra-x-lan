@@ -79,6 +79,17 @@ def print_report_state(data: dict[str, Any]) -> str | None:
     return state if isinstance(state, str) else None
 
 
+def print_state(data: dict[str, Any]) -> str | None:
+    """Phase reported by the print report, else by the info project."""
+    state = print_report_state(data)
+
+    if state:
+        return state
+
+    state = project(data).get("state")
+    return state if isinstance(state, str) and state else None
+
+
 def _int(value: Any) -> int | None:
     try:
         return int(value)
@@ -86,8 +97,16 @@ def _int(value: Any) -> int | None:
         return None
 
 
+def has_task(data: dict[str, Any]) -> bool:
+    """The Kobra X reports task_id -1 when no job is loaded."""
+    return task_id(data) != ""
+
+
 def print_in_progress(data: dict[str, Any]) -> bool:
-    state = print_report_state(data)
+    if not has_task(data):
+        return False
+
+    state = print_state(data)
 
     if state in PRINT_STATES_ACTIVE:
         return True
@@ -99,25 +118,25 @@ def print_in_progress(data: dict[str, Any]) -> bool:
 
 
 def print_paused(data: dict[str, Any]) -> bool:
-    if print_report_state(data) in PRINT_STATES_PAUSED:
+    if print_state(data) in PRINT_STATES_PAUSED:
         return True
 
     return bool(_int(project(data).get("pause"))) and print_in_progress(data)
 
 
 def print_complete(data: dict[str, Any]) -> bool:
-    if print_report_state(data) in PRINT_STATES_DONE:
+    if print_state(data) in PRINT_STATES_DONE:
         return True
 
     return _int(project(data).get("print_status")) == PRINT_STATUS_FINISHED
 
 
 def print_failed(data: dict[str, Any]) -> bool:
-    return print_report_state(data) in PRINT_STATES_FAILED
+    return print_state(data) in PRINT_STATES_FAILED
 
 
 def print_stopped(data: dict[str, Any]) -> bool:
-    return print_report_state(data) in PRINT_STATES_STOPPED
+    return print_state(data) in PRINT_STATES_STOPPED
 
 
 def last_print_error(data: dict[str, Any]) -> str | None:
@@ -130,19 +149,22 @@ def last_print_error(data: dict[str, Any]) -> str | None:
     return str(message) if message else "failed"
 
 
+def _valid_task_id(value: Any) -> str | None:
+    if value is None or str(value) in ("", "-1", "0"):
+        return None
+
+    return str(value)
+
+
 def task_id(data: dict[str, Any]) -> str:
+    """Current job id, or "" when none (the printer reports -1 when idle)."""
     current = project(data)
 
     for key in ("task_id", "taskid"):
-        if current.get(key) is not None:
-            return str(current[key])
+        if key in current:
+            return _valid_task_id(current[key]) or ""
 
-    print_data = payload(data, "print")
-
-    if print_data.get("taskid") is not None:
-        return str(print_data["taskid"])
-
-    return ""
+    return _valid_task_id(payload(data, "print").get("taskid")) or ""
 
 
 def print_settings(data: dict[str, Any]) -> dict[str, Any]:
@@ -155,21 +177,21 @@ def print_settings(data: dict[str, Any]) -> dict[str, Any]:
             settings[key] = info[key]
 
     current = project(data)
+    sources: list[dict[str, Any]] = [current]
 
-    for key in ("print_speed_mode", "print_speed_pct"):
-        if key in current:
-            settings[key] = current[key]
+    if isinstance(current.get("settings"), dict):
+        sources.append(current["settings"])
 
-    current_settings = current.get("settings")
-
-    if isinstance(current_settings, dict):
-        settings.update(current_settings)
-
-    print_data = payload(data, "print")
-    update_settings = print_data.get("settings")
+    update_settings = payload(data, "print").get("settings")
 
     if isinstance(update_settings, dict):
-        settings.update(update_settings)
+        sources.append(update_settings)
+
+    # An idle project reports 0 for both; that is "no job", not a setting.
+    for source in sources:
+        for key in ("print_speed_mode", "print_speed_pct"):
+            if _int(source.get(key)):
+                settings[key] = source[key]
 
     return settings
 
