@@ -9,31 +9,35 @@ This integration is focused on local printer access. It does not require an Anyc
 ## Features
 
 - Local setup by printer IP address
-- Printer state sensor
-- Nozzle and bed temperature sensors
-- Target nozzle and bed temperature controls
-- Fan speed sensors and controls
-- Firmware version sensor
-- Printer model and IP sensors
-- Feature information sensor
-- Multi-color box status
-- Dynamic filament slot sensors
-- Camera entity (auto-starts the printer stream)
-- Camera stream switch
+- Printer state, model, IP and firmware sensors
+- Nozzle and bed temperature sensors and controls (also while idle)
+- Fan speed sensors and controls (also while idle)
+- Print task, status, progress, layers, times, estimated finish, filament used
+- Print control: pause, resume, cancel
+- Print speed mode select (only while printing) and print speed sensor
+- Binary sensors: printing, paused, complete, failed, cancelled, LAN connection
+- Multi-color box (ACE): status, temperature, humidity, dynamic slot sensors
+- Filament drying: start/stop buttons, drying temperature and duration settings, drying state and remaining time
+- Runout auto refill switch, retract filament button
+- Axis homing, disable motors and position sensors (disabled by default)
+- Camera entity (auto-starts the printer stream) and camera stream switch
 - Camera light control
-- Refresh data button
-- Reconnect LAN connection button
+- Refresh data and reconnect buttons
+- Services: `move_axis`, `start_drying`, `stop_drying`, `refresh_data`, `reconnect`
 - Diagnostics support
+
+Command payloads follow AnycubicSlicerNext's LAN (MQTT) commands, as mapped by
+[anycubic-cloud-api](https://pypi.org/project/anycubic-cloud-api/) used by
+[Nino6689/hass-anycubic](https://github.com/Nino6689/hass-anycubic). Not every
+printer answers every command; entities stay unknown when the printer does not
+report the value.
 
 ## Not included
 
-The first release intentionally avoids features that are better handled from the slicer or require extra care:
-
 - Firmware update checks
-- Print upload/start
-- Axis movement
-- Filament loading/unloading
-- Filament color changes
+- Print upload/start and file management
+- Filament loading, slot colour/material editing
+- AI detection settings (the printer only accepts these over the cloud)
 - Cloud account features
 
 ## Installation with HACS
@@ -107,26 +111,20 @@ Camera light control is exposed separately as a light entity. See [`example_dash
 
 ## Controls
 
-The integration includes basic controls for common Home Assistant use cases:
-
-- Set target nozzle temperature
-- Set target bed temperature
-- Set model fan speed
-- Set aux fan speed
-- Set box/chamber fan speed
-- Turn camera light on/off
-- Refresh printer data
-- Reconnect the LAN connection
-
-Set nozzle or bed target temperature to `0` to turn heating off.
+- Set target nozzle/bed temperature. While printing this changes the job settings, while idle it preheats (`tempature/set`). Set to `0` to turn heating off.
+- Set model, aux and box fan speed.
+- Pause, resume and cancel the running print. Buttons are unavailable when the action does not apply.
+- Print speed mode. The printer only accepts it during a print.
+- Filament drying: set **Drying temperature** and **Drying duration**, then press **Start drying**. The `start_drying` service accepts temperature, duration and box directly.
+- Runout auto refill switch and retract filament button per multi-color box.
+- Axis: home all / home X/Y / home Z / disable motors buttons and the `move_axis` service. These are disabled by default and refused while printing.
+- Turn camera light on/off.
 
 ## Safety notes
 
-Temperature and fan controls send commands directly to the printer over LAN.
+All commands are sent directly to the printer over LAN.
 
-This integration does not start prints, upload files, move printer motors, or perform filament loading/unloading operations.
-
-Use the slicer for actions that require direct supervision, such as axis movement, filament changes, file upload, or starting a print.
+Axis movement buttons are disabled by default. The printer ignores jogs until it has been homed; keep moves small and watch the printer.
 
 ## Local-only focus
 

@@ -6,14 +6,23 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- Print control buttons: pause, resume, cancel.
+- Print speed mode select, print speed and speed mode name sensors, estimated finish sensor, last print error sensor.
+- Binary sensors: printing, print paused, print complete, print failed, print cancelled, axis moving, LAN connection, drying.
+- Multi-color box (ACE): temperature and humidity sensors, drying start/stop buttons, drying temperature/duration settings, drying target/duration/remaining sensors, runout auto refill switch, retract filament button. Entities are created per box.
+- Axis: home all, home X/Y, home Z, disable motors, read position buttons and X/Y/Z position sensors (disabled by default).
+- Services `move_axis`, `start_drying` and `stop_drying`.
+- Target temperature and fan controls also work while idle (`tempature/set`, `fan/setSpeed`).
 - Camera entity is loaded again and plays the printer's HTTP-FLV stream.
 - Camera stream switch is loaded.
 - Camera card in the example dashboard.
 
 ### Fixed
 
+- Polling no longer throws away state the printer pushed on its own (print progress, pause, drying, command replies); replies to commands are merged instead of replacing whole reports.
 - Camera staying idle with no picture after a printer or Home Assistant restart: `startCapture` is now sent whenever the stream is opened and after the LAN connection reconnects.
 - Kobra X `206 Partial Content` stream response is relayed as `200` so ffmpeg/go2rtc accept it.
+- Filament slot sensors and lights reported after setup (e.g. when the multi-color box report misses the first refresh after a printer reboot) are now added automatically instead of only after a reload.
 - MQTT connection now sends keepalive pings and reconnects when the printer stops answering (e.g. after a printer reboot).
 
 ## 0.1.2

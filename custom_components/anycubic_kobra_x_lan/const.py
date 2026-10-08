@@ -9,7 +9,16 @@ DEFAULT_POLLING_INTERVAL = 30
 MIN_POLLING_INTERVAL = 10
 MAX_POLLING_INTERVAL = 3600
 
-PLATFORMS = ["sensor", "binary_sensor", "button", "camera", "light", "number", "switch"]
+PLATFORMS = [
+    "sensor",
+    "binary_sensor",
+    "button",
+    "camera",
+    "light",
+    "number",
+    "select",
+    "switch",
+]
 
 # The printer serves its camera as HTTP-FLV on this port once it has been
 # told to startCapture over MQTT.
@@ -26,4 +35,11 @@ QUERY_TYPES = [
     "light",
     "peripherie",
     "multiColorBox",
+]
+
+# Queried every poll but not waited for: printers that do not support them
+# simply stay silent.
+OPTIONAL_QUERY_TYPES = [
+    "print",
+    "axis",
 ]
