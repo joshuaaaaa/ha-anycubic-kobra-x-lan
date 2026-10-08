@@ -11,7 +11,7 @@ from homeassistant.components.sensor import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import PERCENTAGE, UnitOfTemperature, UnitOfTime
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -189,15 +189,35 @@ async def async_setup_entry(
 ) -> None:
     coordinator: AnycubicKobraXLanCoordinator = hass.data[DOMAIN][entry.entry_id]
 
-    descriptions = [
-        *STATIC_SENSORS,
-        *_slot_sensor_descriptions(coordinator.data or {}),
-    ]
-
     async_add_entities(
         AnycubicKobraXLanSensor(coordinator, entry, description)
-        for description in descriptions
+        for description in STATIC_SENSORS
     )
+
+    known_slots: set[str] = set()
+
+    @callback
+    def _async_add_new_slots() -> None:
+        # The multi-color box report often arrives after the first refresh
+        # (e.g. right after a printer reboot), so slot sensors are added
+        # whenever new slots show up instead of only at setup.
+        new_descriptions = [
+            description
+            for description in _slot_sensor_descriptions(coordinator.data or {})
+            if description.key not in known_slots
+        ]
+
+        if not new_descriptions:
+            return
+
+        known_slots.update(description.key for description in new_descriptions)
+        async_add_entities(
+            AnycubicKobraXLanSensor(coordinator, entry, description)
+            for description in new_descriptions
+        )
+
+    _async_add_new_slots()
+    entry.async_on_unload(coordinator.async_add_listener(_async_add_new_slots))
 
 
 class AnycubicKobraXLanSensor(

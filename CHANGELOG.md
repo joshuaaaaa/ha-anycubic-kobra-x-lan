@@ -14,6 +14,7 @@ All notable changes to this project will be documented in this file.
 
 - Camera staying idle with no picture after a printer or Home Assistant restart: `startCapture` is now sent whenever the stream is opened and after the LAN connection reconnects.
 - Kobra X `206 Partial Content` stream response is relayed as `200` so ffmpeg/go2rtc accept it.
+- Filament slot sensors and lights reported after setup (e.g. when the multi-color box report misses the first refresh after a printer reboot) are now added automatically instead of only after a reload.
 - MQTT connection now sends keepalive pings and reconnects when the printer stops answering (e.g. after a printer reboot).
 
 ## 0.1.2
